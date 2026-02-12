@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target/
+
+# Cargo local backup files
+**/*.rs.bk
+
+# Generated job scripts and outputs
+/.batchelor/
+/batches/
+/slurm_batches/
+*.out
+
+# IDE/editor files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
