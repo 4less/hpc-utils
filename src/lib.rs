@@ -49,6 +49,10 @@ pub struct Cli {
     /// Keep generated intermediate batch scripts after successful submission.
     #[arg(long)]
     keep: bool,
+
+    /// Call script once per batch with all inputs instead of once per input.
+    #[arg(long)]
+    multi_input: bool,
 }
 
 pub fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
@@ -90,6 +94,7 @@ pub fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             &cli.input_flag,
             chunk,
             &cli.script_args,
+            cli.multi_input,
         )?;
 
         if cli.dry_run {
@@ -180,6 +185,7 @@ fn write_job_script(
     input_flag: &str,
     inputs: &[String],
     script_args: &[String],
+    multi_input: bool,
 ) -> io::Result<()> {
     let mut text = String::new();
     text.push_str("#!/usr/bin/env bash\n");
@@ -195,35 +201,67 @@ fn write_job_script(
     let has_template = template_tokens.iter().any(|t| t.contains("$1"));
     let positional_slot = parse_positional_slot(input_flag);
 
-    for input in inputs {
-        let input_q = shell_quote(input);
-        if let Some(slot) = positional_slot {
-            let mut args = script_args_q.clone();
-            let idx = slot.saturating_sub(1).min(args.len());
-            args.insert(idx, input_q);
+    if multi_input {
+        let mut args: Vec<String> = Vec::new();
 
-            if args.is_empty() {
-                text.push_str(&format!("bash {}\n", script_q));
-            } else {
-                text.push_str(&format!("bash {} {}\n", script_q, args.join(" ")));
+        if let Some(slot) = positional_slot {
+            args = script_args_q.clone();
+            let mut idx = slot.saturating_sub(1).min(args.len());
+            for input in inputs {
+                args.insert(idx, shell_quote(input));
+                idx += 1;
             }
         } else if has_template {
-            let mut args = template_tokens
-                .iter()
-                .map(|t| shell_quote(&t.replace("$1", input)))
-                .collect::<Vec<_>>();
+            for input in inputs {
+                args.extend(
+                    template_tokens
+                        .iter()
+                        .map(|t| shell_quote(&t.replace("$1", input))),
+                );
+            }
             args.extend(script_args_q.iter().cloned());
-            text.push_str(&format!("bash {} {}\n", script_q, args.join(" ")));
-        } else if script_args_q.is_empty() {
-            text.push_str(&format!("bash {} {} {}\n", script_q, input_flag_q, input_q));
         } else {
-            text.push_str(&format!(
-                "bash {} {} {} {}\n",
-                script_q,
-                input_flag_q,
-                input_q,
-                script_args_q.join(" ")
-            ));
+            args.push(input_flag_q);
+            args.extend(inputs.iter().map(|i| shell_quote(i)));
+            args.extend(script_args_q.iter().cloned());
+        }
+
+        if args.is_empty() {
+            text.push_str(&format!("bash {}\n", script_q));
+        } else {
+            text.push_str(&format!("bash {} {}\n", script_q, args.join(" ")));
+        }
+    } else {
+        for input in inputs {
+            let input_q = shell_quote(input);
+            if let Some(slot) = positional_slot {
+                let mut args = script_args_q.clone();
+                let idx = slot.saturating_sub(1).min(args.len());
+                args.insert(idx, input_q);
+
+                if args.is_empty() {
+                    text.push_str(&format!("bash {}\n", script_q));
+                } else {
+                    text.push_str(&format!("bash {} {}\n", script_q, args.join(" ")));
+                }
+            } else if has_template {
+                let mut args = template_tokens
+                    .iter()
+                    .map(|t| shell_quote(&t.replace("$1", input)))
+                    .collect::<Vec<_>>();
+                args.extend(script_args_q.iter().cloned());
+                text.push_str(&format!("bash {} {}\n", script_q, args.join(" ")));
+            } else if script_args_q.is_empty() {
+                text.push_str(&format!("bash {} {} {}\n", script_q, input_flag_q, input_q));
+            } else {
+                text.push_str(&format!(
+                    "bash {} {} {} {}\n",
+                    script_q,
+                    input_flag_q,
+                    input_q,
+                    script_args_q.join(" ")
+                ));
+            }
         }
     }
 
